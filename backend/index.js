@@ -2,6 +2,7 @@ import dotenv from "dotenv";
 import express from "express";
 import axios from "axios";
 import cors from "cors";
+import { OpenAI } from "openai/client.js";
 
 dotenv.config();
 const app = express();
@@ -13,6 +14,12 @@ app.use(
 );
 
 app.use(express.json());
+
+// OpenAI client
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
 
 let zoomTokens = null;
 
@@ -129,6 +136,50 @@ app.get("/zoom/meetings", async (req, res) => {
   } catch (err) {
     console.error("GET /zoom/meetings error:", err?.response?.data || err.message);
     res.status(500).json({ error: "Failed to fetch meetings" });
+  }
+});
+
+
+app.post("/ai/summarize-meetings", async (req, res) => {
+  try {
+    const { meetings } = req.body;
+
+    if (!meetings) {
+      return res.status(400).json({ error: "meetings is required" });
+    }
+
+    // ✅ Reduce payload size sent to LLM (important for speed)
+    const simplifiedMeetings = (meetings.meetings || []).map((m) => ({
+      topic: m.topic,
+      start_time: m.start_time,
+      duration: m.duration,
+      timezone: m.timezone,
+      agenda: m.agenda,
+    }));
+
+    const prompt = `
+You are an AI assistant for my organization.
+Summarize these Zoom meetings in a clear, actionable format.
+
+Return:
+1) A short overview
+2) Bullet list of meetings (topic + start_time + duration)
+3) Preparation checklist for the day
+
+Meetings JSON:
+${JSON.stringify(simplifiedMeetings, null, 2)}
+`;
+
+    const ollamaRes = await axios.post("http://localhost:11434/api/generate", {
+      model: "llama3.1:8b",
+      prompt,
+      stream: false
+    });
+
+    res.json({ summary: ollamaRes.data.response });
+  } catch (err) {
+    console.error("Ollama summarize error:", err?.response?.data || err.message);
+    res.status(500).json({ error: "Failed to summarize meetings using Ollama" });
   }
 });
 
