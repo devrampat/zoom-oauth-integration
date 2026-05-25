@@ -1,0 +1,65 @@
+Area 1 — S2S Auth & Token Management
+STORY-01: Implement Zoom Server-to-Server OAuth Token Service
+Implement token fetch and in-memory caching using Zoom S2S OAuth. Token should auto-refresh before expiry with a 60-second buffer. Centralize in a reusable module across the Node BFF.
+STORY-02: Store and Share Token via Redis
+Move token storage from in-memory to Redis so token is shared across multiple BFF instances without redundant refresh calls.
+
+Area 2 — Zoom Meeting Fetch (Node BFF)
+STORY-03: API Endpoint — Fetch Past Meetings (Last 14 Days)
+Build GET /api/zoom/meetings endpoint that fetches the authenticated user's past meetings from Zoom for the last 14 days. Identity must be resolved from session, never from client input.
+STORY-04: API Endpoint — Fetch Summary for Selected Meetings
+Build POST /api/zoom/meetings/summaries endpoint that accepts a list of meeting IDs, fetches their summaries from Zoom, and returns them. Validate that each meeting belongs to the requesting user before calling Zoom.
+STORY-05: User Identity Binding — Map App User to Zoom User ID
+At login, resolve the authenticated app user to their Zoom User ID via Zoom's /users/me endpoint and store in session. All downstream Zoom API calls must use this session-bound Zoom ID.
+STORY-06: Handle Zoom API Pagination
+Ensure meeting list fetch handles Zoom's paginated responses via next_page_token. All pages should be fetched and merged before returning to UI.
+STORY-07: Handle Missing or Unavailable Summaries
+Gracefully handle meetings where AI Companion summary is not available. Return a summary_status field in the response so UI can indicate availability to the user.
+
+Area 3 — Data Storage (Postgres)
+STORY-08: Design and Implement Meetings & Summaries Schema
+Create Postgres tables for meetings, summaries, and audit_logs. All records must include owner_user_id for user scoping. Apply row-level security policies so users can only access their own rows.
+STORY-09: Persist Fetched Meetings and Summaries to DB
+After fetching from Zoom, save meeting metadata and raw summary to Postgres before forwarding to ingest service. Track ingest_status per summary.
+STORY-10: Implement 7-Day Retention — Archival Job
+Build a nightly job that strips summary content and marks records older than 7 days as archived. Archived records should no longer be accessible via the app.
+STORY-11: Implement Hard Delete Job
+Build a scheduled job to permanently delete archived records beyond the defined hard delete window (e.g. 30 days). Ensure corresponding vector store chunks are also deleted.
+
+Area 4 — Zoom + Ingest Service (Python)
+STORY-12: Build Ingest Endpoint to Accept Summary Payload
+Create a POST /ingest/summary endpoint in the Python ingest service that accepts raw summary text and meeting metadata from the Node BFF.
+STORY-13: Chunk and Embed Summary Text
+Implement chunking strategy for summary text and generate embeddings using the configured embedding model. Each chunk must carry owner_user_id and meeting_id as metadata.
+STORY-14: Store Embeddings in Vector Store
+Store embedded chunks in the vector store (Pinecone/pgvector) with owner metadata. Ensure upsert logic handles re-ingestion of the same meeting without duplicates.
+STORY-15: Purge User's Vectors on Archival
+When a summary is archived, delete corresponding vectors from the vector store filtered by owner_user_id and meeting_id.
+
+Area 5 — Digest Chat Feature (Python + BFF)
+STORY-16: Build Chat Endpoint in BFF
+Create POST /api/digest/chat in Node BFF that accepts a natural language question and proxies it to the Python chat service with the authenticated user's ID.
+STORY-17: Implement RAG Query in Chat Service
+In the Python chat service, embed the incoming question, query the vector store filtered strictly by owner_user_id, and pass retrieved chunks as context to the LLM.
+STORY-18: Return Source Attribution in Chat Response
+Chat responses should include which meetings the answer was derived from (meeting topic, date) so users can trace information back to its source.
+STORY-19: Support Meeting-Scoped Chat
+Allow user to optionally filter digest chat to specific meeting IDs — e.g. "only ask about this week's standups". BFF passes meeting ID filter to chat service.
+
+Area 6 — React UI
+STORY-20: Build Meeting Selector Screen
+Build UI screen that loads the user's past 14 days of meetings with summary availability status. User can select meetings and trigger summary fetch.
+STORY-21: Build Summary Viewer
+Display fetched summary for a selected meeting. Show meeting title, date, duration, and AI-generated summary text. Include an "Ingest for Digest" action button.
+STORY-22: Build Digest Chat Interface
+Build chat UI where user can ask natural language questions about their ingested meetings. Display responses with source meeting attribution.
+STORY-23: Build My Data Transparency Screen
+Show the user how many meetings and summaries are stored, oldest record date, and auto-delete date. Include a "Delete All My Data" button.
+
+Area 7 — Compliance & Audit
+STORY-24: Implement Audit Logging Middleware in BFF
+Add middleware to Node BFF that logs every request to the audit table — including app user, Zoom user queried, action, resource, and timestamp. Middleware should apply to all Zoom-related routes.
+STORY-25: Alert on Cross-User Access Attempt
+Add detection logic in audit middleware that fires an alert (Slack/email) if app_user does not match zoom_user_queried. This should never happen but must be caught if it does.
+STORY-26: Make Audit Logs Append-Only
+Enforce that audit log table has no UPDATE or DELETE permissions at the DB level. Audit records must be immutable once written.
